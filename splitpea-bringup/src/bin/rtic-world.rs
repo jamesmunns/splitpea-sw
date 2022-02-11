@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-extern crate stm32g0xx_hal as hal;
+use stm32g0xx_hal as hal;
 use core::convert::Infallible;
 
 use splitpea_bringup as _;
@@ -19,6 +19,7 @@ pub enum AnyPin<T> {
 
 pub struct Msg {
     key_idx: u8,
+    led_idx: u8,
     state: bool,
 }
 
@@ -110,7 +111,7 @@ mod app {
             &mut rcc,
         );
         smartled_spi.half_duplex_output_enable(true);
-        let mut smartled = Ws2812::new(smartled_spi);
+        let smartled = Ws2812::new(smartled_spi);
 
         // Active High
         let _led_enable = gpiob.pb3.into_push_pull_output_in_state(PinState::High);
@@ -158,15 +159,17 @@ mod app {
 
             for (cidx, col) in keys.cols.iter().enumerate() {
 
-                let kidx = if (ridx & 1) == 0 {
-                    (ridx * 5) + cidx
+                let kidx = (ridx * 5) + cidx;
+
+                let lidx = if (ridx & 1) == 0 {
+                    kidx
                 } else {
                     ((ridx + 1) * 5) - 1 - cidx
                 };
 
                 let active = matches!(col.is_low(), Ok(true));
                 if active != state[kidx] {
-                    ctx.local.sq_tx.enqueue(Msg { key_idx: kidx as u8, state: active }).ok();
+                    ctx.local.sq_tx.enqueue(Msg { key_idx: kidx as u8, led_idx: lidx as u8, state: active }).ok();
                 }
 
                 state[kidx] = active;
@@ -192,11 +195,13 @@ mod app {
                 dirty = true;
 
                 let kiu = msg.key_idx as usize;
+                let liu = msg.led_idx as usize;
 
                 lcl_state[kiu] = msg.state;
 
                 if msg.state {
-                    colors[kiu] = colors::RED;
+                    colors[liu] = colors::RED;
+                    defmt::println!("kidx: {=u8}, lidx: {=u8}", msg.key_idx, msg.led_idx);
                     let center_col = match c & 0b11 {
                         0 => colors::RED,
                         1 => colors::GREEN,
@@ -206,12 +211,11 @@ mod app {
                     c = c.wrapping_add(1);
                     colors[17] = center_col;
                 } else {
-                    colors[kiu] = colors::BLACK;
+                    colors[liu] = colors::BLACK;
                 }
             }
 
             if dirty {
-
                 let _ = defmt::unwrap!(smartled.write(gamma(colors.iter().cloned())).map_err(drop));
             }
         }

@@ -114,7 +114,6 @@ fn nmmain() {
                     c = c.wrapping_add(1);
 
                     colors[idx] = colors::WHITE;
-                    colors[]
                     let _ = defmt::unwrap!(smartled.write(gamma(colors.iter().cloned())).map_err(drop));
 
                     while let Ok(true) = col.is_low() { }
