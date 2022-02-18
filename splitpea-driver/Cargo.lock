@@ -431,6 +431,7 @@ name = "splitpea-driver"
 version = "0.1.0"
 dependencies = [
  "embedded-hal",
+ "heapless",
  "phm",
  "postcard",
  "serialport",
