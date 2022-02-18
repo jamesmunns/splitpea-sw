@@ -1,0 +1,26 @@
+[package]
+name = "splitpea-driver"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+postcard = "0.7.3"
+
+# TODO(AJM): Make this "bin only"
+serialport = "4.0.1"
+embedded-hal = "0.2.7"
+
+[dependencies.splitpea-icd]
+path = "../splitpea-icd"
+
+[dependencies.phm]
+git = "https://github.com/jamesmunns/pretty-hal-machine.git"
+rev = "f1a2ef7cbb62722ee9eb4f288da3559f9b11ad14"
+
+[features]
+use-std = []
+
+# TODO:
+default = ["use-std"]

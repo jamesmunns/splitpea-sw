@@ -15,7 +15,7 @@ use hal::stm32::I2C1;
 use stm32g0xx_hal::{rcc::{Config, PllConfig, Prescaler, RccExt}, gpio::{GpioExt, gpiob::PB, gpioc::PC, Output, PushPull, gpioa::PA, Input, Floating}, spi::{Spi, NoSck, NoMiso}, time::U32Ext, prelude::{PinState, OutputPin, InputPin}};
 use heapless::spsc::{Queue, Producer, Consumer};
 use heapless::Deque;
-use serde::{Serialize, Deserialize};
+use splitpea_icd::{Event, EventKind};
 
 pub enum AnyPin<T> {
     PortA(PA<T>),
@@ -68,19 +68,6 @@ impl OutputPin for AnyPin<Output<PushPull>> {
 pub struct Keys {
     pub cols: [AnyPin<Input<Floating>>; 5],
     pub rows: [AnyPin<Output<PushPull>>; 4],
-}
-
-#[derive(defmt::Format, Serialize, Deserialize)]
-pub struct Event {
-    kidx: u8,
-    kind: EventKind,
-}
-
-#[derive(defmt::Format, Serialize, Deserialize)]
-pub enum EventKind {
-    KeyPress,
-    KeyRelease,
-    // TODO: KeyHold?
 }
 
 #[rtic::app(device = hal::stm32, peripherals = true)]
@@ -285,23 +272,9 @@ struct I2cWerk<'a> {
 }
 
 impl<'a> I2cWerk<'a> {
-    // pub async fn werk(&mut self) -> ! {
-    //     loop {
-    //         defmt::println!("Waiting for match...");
-    //         self.i2c.match_address_read().await;
-    //         defmt::println!("Match!");
-    //         for i in 0..10 {
-    //             self.i2c.send_read_byte(i).await;
-    //             defmt::println!("Sent {=u8}", i);
-    //         }
-    //         defmt::println!("Waiting for stop...");
-    //         self.i2c.wait_for_stop().await;
-    //     }
-    // }
-
     pub async fn werk(&mut self) -> ! {
         loop {
-            defmt::println!("Waiting for match...");
+            // defmt::println!("Waiting for match...");
 
             // Wait for a "write command" over I2C
             self.i2c.match_address_write().await;
@@ -320,12 +293,12 @@ impl<'a> I2cWerk<'a> {
                     let len = self.hold.len();
                     let len_u8 = len as u8;
 
-                    defmt::println!("Got qlen command!, {=u8} ready", len_u8);
-                    defmt::println!("Wait for read cmd...");
+                    // defmt::println!("Got qlen command!, {=u8} ready", len_u8);
+                    // defmt::println!("Wait for read cmd...");
                     self.i2c.match_address_read().await;
-                    defmt::println!("Reading...");
+                    // defmt::println!("Reading...");
                     self.i2c.send_read_byte(len_u8).await;
-                    defmt::println!("Read one byte! Waiting for stop...");
+                    // defmt::println!("Read one byte! Waiting for stop...");
                     self.i2c.wait_for_stop().await;
                 },
 

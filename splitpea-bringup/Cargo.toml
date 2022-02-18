@@ -27,6 +27,10 @@ heapless = "0.7.10"
 cassette = "0.2.3"
 postcard = "0.7.3"
 
+[dependencies.splitpea-icd]
+path = "../splitpea-icd"
+features = ["use-defmt"]
+
 [dependencies.serde]
 version = "1.0.136"
 default-features = false
