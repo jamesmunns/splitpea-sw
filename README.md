@@ -6,4 +6,7 @@ This code is for developing the firmware and driver for the splitpea keyboard.
 
 More docs soon, work in progress!
 
-You can see the development of this project [here, on YouTube!](https://youtu.be/EughbCeVVxw)
+You can see the development of this project on YouTube:
+
+* [Writing a driver](https://youtu.be/EughbCeVVxw)
+* [Working with Keyberon](https://youtu.be/oLRRWSfyou8)
