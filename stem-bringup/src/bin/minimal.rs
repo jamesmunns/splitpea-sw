@@ -1,6 +1,8 @@
 #![no_main]
 #![no_std]
 
+use heapless::spsc::Producer;
+use keyberon::action::Action;
 use stem_bringup as _; // global logger + panicking-behavior + memory layout
 use nrf52840_hal::{
     clocks::{ExternalOscillator, Internal, LfOscStopped},
@@ -17,12 +19,51 @@ use usb_device::{
     device::{UsbDevice, UsbDeviceBuilder, UsbVidPid}, class::UsbClass,
 };
 
+// Keyberon
+use keyberon::{
+    action::{
+        k,
+        l,
+        Action::*,
+    },
+    hid::HidClass,
+    // impl_heterogenous_array,
+    key_code::{KbHidReport, KeyCode, KeyCode::*},
+    layout::{CustomEvent, Event, Layout},
+    matrix::{Matrix, PressedKeys},
+};
+
 type UsbClassKey = keyberon::Class<'static, Usbd<UsbPeripheral<'static>>, Leds>;
 type UsbDeviceKey = usb_device::device::UsbDevice<'static, Usbd<UsbPeripheral<'static>>>;
 
 pub struct Leds {
     //     caps_lock: gpio::gpioc::PC13<gpio::Output<gpio::PushPull>>,
 }
+
+// Constant to denote something I should fix (vs Trans, which is just a nothing)
+const TODO: Action = Action::Trans;
+
+#[rustfmt::skip]
+pub static LAYERS: keyberon::layout::Layers = &[
+    // Left Keyboard, Base Layer
+    &[
+        &[k(Q),      k(W),     k(E),    k(R),    k(T),     ],
+        &[k(A),      k(S),     k(D),    k(F),    k(G),     ],
+        &[k(LShift), k(Z),     k(X),    k(C),    k(V),     ],
+        &[k(LCtrl),  TODO,     Trans,   k(LGui), k(Space), ],
+        //                     ^^^^^ - Not a real key!
+    ],
+    // &[
+    //     &[k(Grave),    k(F1),      k(F2),    k(F3),     k(F4),       k(F5),      k(F6),      k(F7)      ],
+    //     &[k(F8),       k(F9),      k(F10),   k(F11),    k(F12),      k(Delete),  Trans,      Trans      ],
+    //     &[k(PgDown),   k(Up),      k(PgUp),  Trans,     Trans,       Trans,      Trans,      Trans      ],
+    //     &[Trans,       Trans,      Trans,    Trans,     Trans,       Trans,      Trans,      Trans      ],
+    //     &[Trans,       Trans,      Trans,    Trans,     Trans,       k(Left),    k(Down),    k(Right)   ],
+    //     &[Trans,       Trans,      Trans,    Trans,     Trans,       Trans,      Trans,      Trans      ],
+    //     &[Trans,       Trans,      Trans,    Trans,     Trans,       Trans,      Trans,      Trans      ],
+    //     &[Trans,       l(1),       Trans,    Trans,     Trans,       Trans,      Trans,      Trans      ],
+    // ],
+];
 
 impl keyberon::keyboard::Leds for Leds {
     /// Sets the num lock state.
@@ -52,26 +93,9 @@ mod app {
     use super::*;
     use cortex_m::singleton;
     use defmt::unwrap;
-    use heapless::spsc::Queue;
+    use heapless::spsc::{Queue, Producer, Consumer};
     use stem_bringup::monotonic::{ExtU32, MonoTimer};
-    use postcard::{to_vec_cobs, CobsAccumulator, FeedResult};
-    use splitpea_driver::Splitpea;
-
-
-    // Keyberon
-    use keyberon::{
-        action::{
-            k,
-            l,
-            Action::{self, *},
-        },
-        debounce::Debouncer,
-        hid::HidClass,
-        // impl_heterogenous_array,
-        key_code::{KbHidReport, KeyCode, KeyCode::*},
-        layout::{CustomEvent, Event, Layout},
-        matrix::{Matrix, PressedKeys},
-    };
+    use splitpea_driver::{Splitpea, icd::EventKind as SpEventKind};
 
     #[monotonic(binds = TIMER0, default = true)]
     type Monotonic = MonoTimer<TIMER0>;
@@ -86,14 +110,14 @@ mod app {
         usb_class: HidClass<'static, Usbd<UsbPeripheral<'static>>, keyberon::keyboard::Keyboard<Leds>>,
         usb_dev: UsbDevice<'static, Usbd<UsbPeripheral<'static>>>,
         pea: Splitpea<Twim<TWIM0>>,
+        kbd_prod: Producer<'static, KbHidReport, 8>,
+        kbd_cons: Consumer<'static, KbHidReport, 8>,
+        layout: Layout,
     }
 
     #[init(local = [
         usb_bus: Option<UsbBusAllocator<Usbd<UsbPeripheral<'static>>>> = None,
-        // incoming: Queue<ToMcu, 8> = Queue::new(),
-        // outgoing: Queue<Result<ToPc, ()>, 8> = Queue::new(),
-        uart_rx_buf: [u8; 64] = [0; 64],
-        uart_tx_buf: [u8; 1] = [0],
+        kbd_evts: Queue<KbHidReport, 8> = Queue::new(),
     ])]
     fn init(cx: init::Context) -> (Shared, Local, init::Monotonics) {
         let device = cx.device;
@@ -131,24 +155,28 @@ mod app {
         let usb_class = keyberon::new_class(usb_bus.as_ref().unwrap(), leds);
         let usb_dev = keyberon::new_device(usb_bus.as_ref().unwrap());
 
+        let (kbd_prod, kbd_cons) = cx.local.kbd_evts.split();
+
         usb_tick::spawn().ok();
         key_tick::spawn().ok();
         (
             Shared {},
             Local {
-                // worker,
-                // interface_comms,
+                kbd_prod,
+                kbd_cons,
                 usb_class,
                 usb_dev,
                 pea,
+                layout: Layout::new(LAYERS),
             },
             init::Monotonics(mono),
         )
     }
 
-    #[task(local = [pea, ctr: u32 = 0])]
+    #[task(local = [pea, kbd_prod, layout, ctr: u32 = 0])]
     fn key_tick(cx: key_tick::Context) {
         let pea = cx.local.pea;
+        let layout = cx.local.layout;
 
         *cx.local.ctr += 1;
         if *cx.local.ctr >= 100 {
@@ -160,12 +188,35 @@ mod app {
 
         for evt in evts {
             defmt::println!("EVENT: {:?}", evt);
+
+            let idx_x = evt.kidx / 5;
+            let idx_y = evt.kidx % 5;
+
+            let kevt = match evt.kind {
+                SpEventKind::KeyPress => {
+                    Event::Press(idx_x, idx_y)
+                },
+                SpEventKind::KeyRelease => {
+                    Event::Release(idx_x, idx_y)
+                },
+            };
+
+            layout.event(kevt);
         }
+
+        match layout.tick() {
+            CustomEvent::Press(p) => defmt::println!("press {:?}", p),
+            CustomEvent::Release(r) => defmt::println!("release {:?}", r),
+            _ => {}
+        }
+
+        let rpt: KbHidReport = layout.keycodes().collect();
+        cx.local.kbd_prod.enqueue(rpt).ok();
 
         key_tick::spawn_after(10.millis()).ok();
     }
 
-    #[task(local = [usb_dev, usb_class, ctr: u32 = 0])]
+    #[task(local = [usb_dev, usb_class, kbd_cons, ctr: u32 = 0, hold: Option<(KbHidReport, usize)> = None])]
     fn usb_tick(cx: usb_tick::Context) {
         let usb_dev = cx.local.usb_dev;
         let usb_class = cx.local.usb_class;
@@ -182,35 +233,43 @@ mod app {
 
         usb_poll(usb_dev, usb_class);
 
-        // if let Some(out) = interface_comms.to_pc.dequeue() {
-        //     if let Ok(ser_msg) = to_vec_cobs::<_, 128>(&out) {
-        //         usb_serial.write(&ser_msg).ok();
-        //     } else {
-        //         defmt::panic!("Serialization error!");
-        //     }
-        // }
+        let rpt = cx.local.hold.take();
+        let rpt = rpt.or_else(|| {
+            // Only attempt to send a report if we HAVE one, AND if
+            // it is "new information"
+            if let Some(r) = cx.local.kbd_cons.dequeue() {
+                if usb_class.device_mut().set_keyboard_report(r.clone()) {
+                    Some((r, 0))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        });
 
-        // match usb_serial.read(&mut buf) {
-        //     Ok(sz) if sz > 0 => {
-        //         // let buf = &buf[..sz];
-        //         // let mut window = &buf[..];
-
-        //         // 'cobs: while !window.is_empty() {
-        //         //     window = match cobs_buf.feed::<phm_icd::ToMcu>(&window) {
-        //         //         FeedResult::Consumed => break 'cobs,
-        //         //         FeedResult::OverFull(new_wind) => new_wind,
-        //         //         FeedResult::DeserError(new_wind) => new_wind,
-        //         //         FeedResult::Success { data, remaining } => {
-        //         //             defmt::println!("got: {:?}", data);
-        //         //             interface_comms.to_mcu.enqueue(data).ok();
-        //         //             remaining
-        //         //         }
-        //         //     };
-        //         // }
-        //     }
-        //     Ok(_) | Err(usb_device::UsbError::WouldBlock) => {}
-        //     Err(_e) => defmt::panic!("Usb Error!"),
-        // }
+        // Do we have some kind of pending report to send?
+        if let Some((rpt, offset)) = rpt {
+            let rptb = &rpt.as_bytes()[offset..];
+            match usb_class.write(rptb) {
+                Ok(0) => {
+                    // We do nothing, save off the remaining report for next
+                    // try
+                    *cx.local.hold = Some((rpt, offset));
+                }
+                Ok(n) => {
+                    if rptb.len() == n {
+                        // We wrote everything, yay!
+                    } else {
+                        // We wrote *some* of the message, save it (and the offset) off to retry later
+                        *cx.local.hold = Some((rpt, offset + n));
+                    }
+                }
+                Err(_e) => {
+                    defmt::panic!();
+                }
+            }
+        }
 
         usb_tick::spawn_after(1.millis()).ok();
     }
