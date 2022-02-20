@@ -2,29 +2,76 @@
 #![no_std]
 
 use stem_bringup as _; // global logger + panicking-behavior + memory layout
+use nrf52840_hal::{
+    clocks::{ExternalOscillator, Internal, LfOscStopped},
+    gpio::{p0::Parts as P0Parts, p1::Parts as P1Parts, Level},
+    pac::{SPIM2, TIMER0, TWIM0},
+    spim::{Frequency as SpimFreq, Pins as SpimPins, Spim, MODE_0},
+    twim::{Frequency as TwimFreq, Pins as TwimPins, Twim},
+    uarte::{Baudrate, Parity, Pins as UartPins, Uarte},
+    usbd::{UsbPeripheral, Usbd},
+    Clocks,
+};
+use usb_device::{
+    class_prelude::UsbBusAllocator,
+    device::{UsbDevice, UsbDeviceBuilder, UsbVidPid}, class::UsbClass,
+};
+
+type UsbClassKey = keyberon::Class<'static, Usbd<UsbPeripheral<'static>>, Leds>;
+type UsbDeviceKey = usb_device::device::UsbDevice<'static, Usbd<UsbPeripheral<'static>>>;
+
+pub struct Leds {
+    //     caps_lock: gpio::gpioc::PC13<gpio::Output<gpio::PushPull>>,
+}
+
+impl keyberon::keyboard::Leds for Leds {
+    /// Sets the num lock state.
+    fn num_lock(&mut self, status: bool) {
+        defmt::println!("num_lock: {:?}", status)
+    }
+    /// Sets the caps lock state.
+    fn caps_lock(&mut self, status: bool) {
+        defmt::println!("caps_lock: {:?}", status)
+    }
+    /// Sets the scroll lock state.
+    fn scroll_lock(&mut self, status: bool) {
+        defmt::println!("scroll_lock: {:?}", status)
+    }
+    /// Sets the compose state.
+    fn compose(&mut self, status: bool) {
+        defmt::println!("compose: {:?}", status)
+    }
+    /// Sets the kana state.
+    fn kana(&mut self, status: bool) {
+        defmt::println!("kana: {:?}", status)
+    }
+}
 
 #[rtic::app(device = nrf52840_hal::pac, dispatchers = [SWI0_EGU0])]
 mod app {
+    use super::*;
     use cortex_m::singleton;
     use defmt::unwrap;
     use heapless::spsc::Queue;
-    use nrf52840_hal::{
-        clocks::{ExternalOscillator, Internal, LfOscStopped},
-        gpio::{p0::Parts as P0Parts, p1::Parts as P1Parts, Level},
-        pac::{SPIM2, TIMER0, TWIM0},
-        spim::{Frequency as SpimFreq, Pins as SpimPins, Spim, MODE_0},
-        twim::{Frequency as TwimFreq, Pins as TwimPins, Twim},
-        uarte::{Baudrate, Parity, Pins as UartPins, Uarte},
-        usbd::{UsbPeripheral, Usbd},
-        Clocks,
-    };
     use stem_bringup::monotonic::{ExtU32, MonoTimer};
     use postcard::{to_vec_cobs, CobsAccumulator, FeedResult};
-    use usb_device::{
-        class_prelude::UsbBusAllocator,
-        device::{UsbDevice, UsbDeviceBuilder, UsbVidPid},
+    use splitpea_driver::Splitpea;
+
+
+    // Keyberon
+    use keyberon::{
+        action::{
+            k,
+            l,
+            Action::{self, *},
+        },
+        debounce::Debouncer,
+        hid::HidClass,
+        // impl_heterogenous_array,
+        key_code::{KbHidReport, KeyCode, KeyCode::*},
+        layout::{CustomEvent, Event, Layout},
+        matrix::{Matrix, PressedKeys},
     };
-    use usbd_serial::{SerialPort, USB_CLASS_CDC};
 
     #[monotonic(binds = TIMER0, default = true)]
     type Monotonic = MonoTimer<TIMER0>;
@@ -36,8 +83,9 @@ mod app {
     struct Local {
         // interface_comms: InterfaceComms<8>,
         // worker: Worker<WorkerComms<8>, Twim<TWIM0>, Spim<SPIM2>, PhmUart>,
-        usb_serial: SerialPort<'static, Usbd<UsbPeripheral<'static>>>,
+        usb_class: HidClass<'static, Usbd<UsbPeripheral<'static>>, keyberon::keyboard::Keyboard<Leds>>,
         usb_dev: UsbDevice<'static, Usbd<UsbPeripheral<'static>>>,
+        pea: Splitpea<Twim<TWIM0>>,
     }
 
     #[init(local = [
@@ -72,53 +120,67 @@ mod app {
             },
             TwimFreq::K100,
         );
+        let pea = Splitpea::new(i2c);
 
         // Set up USB Serial Port
         let usb_bus = cx.local.usb_bus;
         usb_bus.replace(Usbd::new(UsbPeripheral::new(device.USBD, clocks)));
-        let usb_serial = SerialPort::new(usb_bus.as_ref().unwrap());
-        let usb_dev = UsbDeviceBuilder::new(usb_bus.as_ref().unwrap(), UsbVidPid(0x16c0, 0x27dd))
-            .manufacturer("OVAR Labs")
-            .product("Splitpea")
-            // TODO: Use some kind of unique ID. This will probably require another singleton,
-            // as the storage must be static. Probably heapless::String -> singleton!()
-            .serial_number("ajm456")
-            .device_class(USB_CLASS_CDC) // TODO
-            .max_packet_size_0(64) // (makes control transfers 8x faster)
-            .build();
 
-        // let comms = CommsLink {
-        //     to_pc: cx.local.outgoing,
-        //     to_mcu: cx.local.incoming,
-        // };
+        let leds = Leds { };
 
-        // let (worker_comms, interface_comms) = comms.split();
+        let usb_class = keyberon::new_class(usb_bus.as_ref().unwrap(), leds);
+        let usb_dev = keyberon::new_device(usb_bus.as_ref().unwrap());
 
-        // let worker = Worker::new(worker_comms, i2c, spi, uart);
-
-        // usb_tick::spawn().ok();
+        usb_tick::spawn().ok();
+        key_tick::spawn().ok();
         (
             Shared {},
             Local {
                 // worker,
                 // interface_comms,
-                usb_serial,
+                usb_class,
                 usb_dev,
+                pea,
             },
             init::Monotonics(mono),
         )
     }
 
-    #[task(local = [usb_serial, usb_dev])]
+    #[task(local = [pea, ctr: u32 = 0])]
+    fn key_tick(cx: key_tick::Context) {
+        let pea = cx.local.pea;
+
+        *cx.local.ctr += 1;
+        if *cx.local.ctr >= 100 {
+            *cx.local.ctr = 0;
+            defmt::println!("KEY TICK");
+        }
+
+        let evts = defmt::unwrap!(pea.get_all_events().map_err(drop));
+
+        for evt in evts {
+            defmt::println!("EVENT: {:?}", evt);
+        }
+
+        key_tick::spawn_after(10.millis()).ok();
+    }
+
+    #[task(local = [usb_dev, usb_class, ctr: u32 = 0])]
     fn usb_tick(cx: usb_tick::Context) {
-        let usb_serial = cx.local.usb_serial;
         let usb_dev = cx.local.usb_dev;
+        let usb_class = cx.local.usb_class;
         // let cobs_buf = cx.local.cobs_buf;
         // let interface_comms = cx.local.interface_comms;
 
+        *cx.local.ctr += 1;
+        if *cx.local.ctr >= 1000 {
+            *cx.local.ctr = 0;
+            defmt::println!("USB TICK");
+        }
+
         let mut buf = [0u8; 128];
 
-        usb_dev.poll(&mut [usb_serial]);
+        usb_poll(usb_dev, usb_class);
 
         // if let Some(out) = interface_comms.to_pc.dequeue() {
         //     if let Ok(ser_msg) = to_vec_cobs::<_, 128>(&out) {
@@ -128,27 +190,27 @@ mod app {
         //     }
         // }
 
-        match usb_serial.read(&mut buf) {
-            Ok(sz) if sz > 0 => {
-                // let buf = &buf[..sz];
-                // let mut window = &buf[..];
+        // match usb_serial.read(&mut buf) {
+        //     Ok(sz) if sz > 0 => {
+        //         // let buf = &buf[..sz];
+        //         // let mut window = &buf[..];
 
-                // 'cobs: while !window.is_empty() {
-                //     window = match cobs_buf.feed::<phm_icd::ToMcu>(&window) {
-                //         FeedResult::Consumed => break 'cobs,
-                //         FeedResult::OverFull(new_wind) => new_wind,
-                //         FeedResult::DeserError(new_wind) => new_wind,
-                //         FeedResult::Success { data, remaining } => {
-                //             defmt::println!("got: {:?}", data);
-                //             interface_comms.to_mcu.enqueue(data).ok();
-                //             remaining
-                //         }
-                //     };
-                // }
-            }
-            Ok(_) | Err(usb_device::UsbError::WouldBlock) => {}
-            Err(_e) => defmt::panic!("Usb Error!"),
-        }
+        //         // 'cobs: while !window.is_empty() {
+        //         //     window = match cobs_buf.feed::<phm_icd::ToMcu>(&window) {
+        //         //         FeedResult::Consumed => break 'cobs,
+        //         //         FeedResult::OverFull(new_wind) => new_wind,
+        //         //         FeedResult::DeserError(new_wind) => new_wind,
+        //         //         FeedResult::Success { data, remaining } => {
+        //         //             defmt::println!("got: {:?}", data);
+        //         //             interface_comms.to_mcu.enqueue(data).ok();
+        //         //             remaining
+        //         //         }
+        //         //     };
+        //         // }
+        //     }
+        //     Ok(_) | Err(usb_device::UsbError::WouldBlock) => {}
+        //     Err(_e) => defmt::panic!("Usb Error!"),
+        // }
 
         usb_tick::spawn_after(1.millis()).ok();
     }
@@ -162,5 +224,11 @@ mod app {
             // unwrap!(worker.step().map_err(drop));
             cortex_m::asm::nop();
         }
+    }
+}
+
+fn usb_poll(usb_dev: &mut UsbDeviceKey, keyboard: &mut UsbClassKey) {
+    if usb_dev.poll(&mut [keyboard]) {
+        keyboard.poll();
     }
 }

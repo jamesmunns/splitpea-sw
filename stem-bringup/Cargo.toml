@@ -20,6 +20,13 @@ usb-device = "0.2.8"
 usbd-serial = "0.1.1"
 postcard = "0.7.2"
 
+[dependencies.splitpea-driver]
+path = "../splitpea-driver"
+
+[dependencies.splitpea-icd]
+path = "../splitpea-icd"
+features = ["use-defmt"]
+
 [dependencies.heapless]
 version = "0.7.10"
 features = ["defmt"]
