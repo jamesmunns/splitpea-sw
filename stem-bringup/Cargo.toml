@@ -19,6 +19,9 @@ nrf52840-hal = "0.14"
 usb-device = "0.2.8"
 usbd-serial = "0.1.1"
 postcard = "0.7.2"
+shared-bus = "0.2.2"
+groundhog = "0.2.5"
+groundhog-nrf52 = "0.5.0"
 
 [dependencies.splitpea-driver]
 path = "../splitpea-driver"

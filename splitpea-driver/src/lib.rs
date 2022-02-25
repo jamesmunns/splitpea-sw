@@ -21,6 +21,7 @@ where
     I2C: WriteRead,
 {
     i2c: I2C,
+    addr: u8,
 }
 
 impl<I2C> Splitpea<I2C>
@@ -31,12 +32,20 @@ where
     pub fn new(i2c: I2C) -> Self {
         Self {
             i2c,
+            addr: 0x42,
+        }
+    }
+
+    pub fn new_with_addr(i2c: I2C, addr: u8) -> Self {
+        Self {
+            i2c,
+            addr,
         }
     }
 
     pub fn get_event_cts(&mut self) -> Result<usize, Error<I2C::Error>> {
         let mut buf = [0u8; 1];
-        self.i2c.write_read(0x42, &[0x10], &mut buf).map_err(Error::I2c)?;
+        self.i2c.write_read(self.addr, &[0x10], &mut buf).map_err(Error::I2c)?;
         Ok(buf[0] as usize)
     }
 
@@ -51,7 +60,7 @@ where
         let mut resp = heapless::Vec::new();
         let mut buf = [0u8; 64]; // TODO: Magic number
         let bufsl = &mut buf [..(2 * ct)];
-        self.i2c.write_read(0x42, &[0x20, ct as u8], bufsl).map_err(Error::I2c)?;
+        self.i2c.write_read(self.addr, &[0x20, ct as u8], bufsl).map_err(Error::I2c)?;
 
         for ch in bufsl.chunks_exact(2) {
             let event: icd::Event = postcard::from_bytes(ch)?;
@@ -78,7 +87,7 @@ where
         let mut resp = Vec::new();
         let mut buf = [0u8; 64]; // TODO: Magic number
         let bufsl = &mut buf [..(2 * ct)];
-        self.i2c.write_read(0x42, &[0x20, ct as u8], bufsl).map_err(Error::I2c)?;
+        self.i2c.write_read(self.addr, &[0x20, ct as u8], bufsl).map_err(Error::I2c)?;
 
         for ch in bufsl.chunks_exact(2) {
             let event: icd::Event = postcard::from_bytes(ch)?;

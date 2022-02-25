@@ -147,7 +147,7 @@ mod app {
             gpiob.pb9.into_open_drain_output(),
             gpiob.pb8.into_open_drain_output(),
             &mut rcc,
-            0x42,
+            0x44,
         );
 
         (
